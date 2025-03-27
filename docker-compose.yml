@@ -1,0 +1,53 @@
+services:
+  ui:
+    container_name: omni-ui
+    image: suryaanshrai515/omnipost-ui:latest
+    ports:
+      - 5173:5173
+    depends_on:
+      api:
+        condition: service_healthy
+    networks:
+      - omni-net
+    healthcheck:
+      test: "exit 0"
+    
+  api:
+    container_name: omni-api
+    image: suryaanshrai515/omnipost-api:latest
+    ports:
+      - 8000:8000
+    networks:
+      - omni-net
+    environment:
+      - PYTHONPATH=/app/app
+      - DB_NAME=omni-db
+      - DB_USER=root
+      - DB_PASSWORD=root
+      - DB_HOST=db
+      - DB_PORT=5432
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test: "exit 0"
+    
+  db:
+    container_name: omni-db
+    image: postgres:latest
+    volumes:
+      - ./db/db-data:/var/lib/postgresql/data
+    ports:
+      - 5432:5432
+    environment:
+      POSTGRES_USER: root
+      POSTGRES_PASSWORD: root
+      POSTGRES_DB: omni-db
+    networks:
+     - omni-net
+    healthcheck:
+      test: "exit 0"
+
+networks:
+  omni-net:
+    name: omni-net
