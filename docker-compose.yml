@@ -1,4 +1,17 @@
 services:
+  landing:
+    container_name: omni-land
+    image: python:3.12.3
+    volumes:
+      - ./landing_page:/app
+    working_dir: /app
+    ports:
+      - 3000:3000
+    command: python3 -m http.server 3000
+    networks:
+      - omni-net
+    healthcheck:
+      test: "exit 0"
   ui:
     container_name: omni-ui
     image: suryaanshrai515/omnipost-ui:latest
@@ -11,7 +24,7 @@ services:
       - omni-net
     healthcheck:
       test: "exit 0"
-    
+
   api:
     container_name: omni-api
     image: suryaanshrai515/omnipost-api:latest
@@ -27,6 +40,9 @@ services:
       - DB_HOST=db
       - DB_PORT=5432
       - REDIS_HOST=redis
+      - AWS_ACCESS_KEY=
+      - AWS_SECRET_KEY=
+      - BUCKET_URL=
     depends_on:
       db:
         condition: service_healthy
@@ -34,7 +50,7 @@ services:
         condition: service_healthy
     healthcheck:
       test: "exit 0"
-    
+
   db:
     container_name: omni-db
     image: postgres:latest
@@ -47,10 +63,10 @@ services:
       POSTGRES_PASSWORD: root
       POSTGRES_DB: omni-db
     networks:
-     - omni-net
+      - omni-net
     healthcheck:
       test: "exit 0"
-  
+
   redis:
     image: redis:latest
     container_name: omni-redis
