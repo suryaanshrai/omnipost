@@ -1,82 +1,203 @@
+# Override with e.g. IMAGE_TAG=<git-sha> in .env to pin to (or roll back to)
+# a specific build instead of whatever :latest currently points at — every
+# image is also pushed tagged with its commit SHA (see omnipost-api's CI).
+x-api-image: &api-image suryaanshrai515/omnipost-api:${IMAGE_TAG:-latest}
+
+x-api-env: &api-env
+  DJANGO_DEBUG: "false"
+  DJANGO_SECRET_KEY: ${DJANGO_SECRET_KEY:?set DJANGO_SECRET_KEY in .env}
+  DJANGO_ALLOWED_HOSTS: ${DJANGO_ALLOWED_HOSTS:-localhost,127.0.0.1}
+  DJANGO_CORS_ALLOWED_ORIGINS: ${DJANGO_CORS_ALLOWED_ORIGINS:-http://localhost:5173}
+  # Wraps every encrypted channel credential and BYOK provider key — see
+  # omnipost_api/crypto.py. Generate with: openssl rand -base64 32
+  OMNIPOST_KEK: ${OMNIPOST_KEK:?set OMNIPOST_KEK in .env — see infra notes in README.md}
+  PYTHONPATH: /app/app
+  DB_NAME: omni-db
+  DB_USER: root
+  DB_PASSWORD: ${DB_PASSWORD:?set DB_PASSWORD in .env}
+  DB_HOST: db
+  DB_PORT: "5432"
+  REDIS_HOST: redis
+  REDIS_PASSWORD: ${REDIS_PASSWORD:?set REDIS_PASSWORD in .env}
+  AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
+  AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
+  AWS_STORAGE_BUCKET_NAME: ${AWS_STORAGE_BUCKET_NAME:-}
+  AWS_S3_REGION_NAME: ${AWS_S3_REGION_NAME:-us-east-1}
+  AWS_S3_ENDPOINT_URL: ${AWS_S3_ENDPOINT_URL:-}
+  AWS_S3_CUSTOM_DOMAIN: ${AWS_S3_CUSTOM_DOMAIN:-}
+  PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-http://localhost:8000}
+  ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+  OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+  # Gated platforms (Phase 6) — managed apps only; LinkedIn/X run under each
+  # workspace's own AppCredential instead. See omnipost-api's .env.example
+  # for why each is blank until that platform's approval clears.
+  META_APP_ID: ${META_APP_ID:-}
+  META_APP_SECRET: ${META_APP_SECRET:-}
+  THREADS_APP_ID: ${THREADS_APP_ID:-}
+  THREADS_APP_SECRET: ${THREADS_APP_SECRET:-}
+  TIKTOK_CLIENT_KEY: ${TIKTOK_CLIENT_KEY:-}
+  TIKTOK_CLIENT_SECRET: ${TIKTOK_CLIENT_SECRET:-}
+  YOUTUBE_CLIENT_ID: ${YOUTUBE_CLIENT_ID:-}
+  YOUTUBE_CLIENT_SECRET: ${YOUTUBE_CLIENT_SECRET:-}
+  # Observability (Phase 7) — both optional. Blank SENTRY_DSN disables error
+  # reporting entirely; blank METRICS_AUTH_TOKEN leaves GET /metrics open
+  # (no secrets/PII in it, same default as /healthz — see omnipost-api's
+  # settings.py). SENTRY_ENVIRONMENT defaults to "production" server-side.
+  SENTRY_DSN: ${SENTRY_DSN:-}
+  SENTRY_ENVIRONMENT: ${SENTRY_ENVIRONMENT:-}
+  METRICS_AUTH_TOKEN: ${METRICS_AUTH_TOKEN:-}
+
+x-api-depends-on-stores: &api-depends-on-stores
+  db:
+    condition: service_healthy
+  redis:
+    condition: service_healthy
+
 services:
-  landing:
-    container_name: omni-land
-    image: python:3.12.3
-    volumes:
-      - ./landing_page:/app
-    working_dir: /app
-    ports:
-      - 3000:3000
-    command: python3 -m http.server 3000
-    networks:
-      - omni-net
-    healthcheck:
-      test: "exit 0"
   ui:
     container_name: omni-ui
     image: suryaanshrai515/omnipost-ui:latest
     ports:
-      - 5173:5173
+      - "5173:5173"
+    environment:
+      - VITE_API_URL=${VITE_API_URL:-http://localhost:8000}
     depends_on:
       api:
         condition: service_healthy
     networks:
       - omni-net
-    healthcheck:
-      test: "exit 0"
 
   api:
     container_name: omni-api
-    image: suryaanshrai515/omnipost-api:latest
+    image: *api-image
     ports:
-      - 8000:8000
+      - "8000:8000"
     networks:
       - omni-net
     environment:
-      - PYTHONPATH=/app/app
-      - DB_NAME=omni-db
-      - DB_USER=root
-      - DB_PASSWORD=root
-      - DB_HOST=db
-      - DB_PORT=5432
-      - REDIS_HOST=redis
-      - AWS_ACCESS_KEY=
-      - AWS_SECRET_KEY=
-      - BUCKET_URL=
-    depends_on:
-      db:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
+      <<: *api-env
+      OMNIPOST_ROLE: web
+    volumes:
+      - media-data:/app/mediafiles
+    depends_on: *api-depends-on-stores
     healthcheck:
-      test: "exit 0"
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/healthz').status==200 else 1)"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+  worker:
+    container_name: omni-worker
+    image: *api-image
+    networks:
+      - omni-net
+    environment:
+      <<: *api-env
+      OMNIPOST_ROLE: worker
+    volumes:
+      - media-data:/app/mediafiles
+    depends_on:
+      api:
+        # Waits for api's healthcheck, which only passes after its entrypoint
+        # has run `migrate` — keeps the worker from touching tables that
+        # don't exist yet on a first boot.
+        condition: service_healthy
+      <<: *api-depends-on-stores
+    restart: unless-stopped
+
+  reconciler:
+    container_name: omni-reconciler
+    image: *api-image
+    networks:
+      - omni-net
+    environment:
+      <<: *api-env
+      OMNIPOST_ROLE: reconciler
+    depends_on:
+      api:
+        condition: service_healthy
+      <<: *api-depends-on-stores
+    restart: unless-stopped
+
+  recurrence:
+    container_name: omni-recurrence
+    image: *api-image
+    networks:
+      - omni-net
+    environment:
+      <<: *api-env
+      OMNIPOST_ROLE: recurrence
+    depends_on:
+      api:
+        condition: service_healthy
+      <<: *api-depends-on-stores
+    restart: unless-stopped
+
+  token-refresher:
+    container_name: omni-token-refresher
+    image: *api-image
+    networks:
+      - omni-net
+    environment:
+      <<: *api-env
+      OMNIPOST_ROLE: token-refresher
+    depends_on:
+      api:
+        condition: service_healthy
+      <<: *api-depends-on-stores
+    restart: unless-stopped
+
+  metrics-poller:
+    container_name: omni-metrics-poller
+    image: *api-image
+    networks:
+      - omni-net
+    environment:
+      <<: *api-env
+      OMNIPOST_ROLE: metrics-poller
+    depends_on:
+      api:
+        condition: service_healthy
+      <<: *api-depends-on-stores
+    restart: unless-stopped
 
   db:
     container_name: omni-db
-    image: postgres:latest
+    image: postgres:16
     volumes:
-      - ./db/db-data:/var/lib/postgresql/data
-    ports:
-      - 5432:5432
+      - db-data:/var/lib/postgresql/data
+    # Not published to the host. Connect via `docker compose exec db psql ...`
+    # if you need a shell; the old setup published 5432 with root/root creds.
     environment:
       POSTGRES_USER: root
-      POSTGRES_PASSWORD: root
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?set DB_PASSWORD in .env}
       POSTGRES_DB: omni-db
     networks:
       - omni-net
     healthcheck:
-      test: "exit 0"
+      test: ["CMD-SHELL", "pg_isready -U root -d omni-db"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
 
   redis:
-    image: redis:latest
+    image: redis:7-alpine
     container_name: omni-redis
-    ports:
-      - "6379:6379"
+    command: ["redis-server", "--requirepass", "${REDIS_PASSWORD:?set REDIS_PASSWORD in .env}"]
+    # Not published to the host — the old setup exposed 6379 with no auth.
     networks:
       - omni-net
     healthcheck:
-      test: "exit 0"
+      test: ["CMD-SHELL", "redis-cli -a $$REDIS_PASSWORD ping | grep -q PONG"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
 
 networks:
   omni-net:
     name: omni-net
+
+volumes:
+  db-data:
+  media-data:
