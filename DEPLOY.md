@@ -1,15 +1,20 @@
 # Cloud deploy recipe
 
-A minimal, single-VPS deployment of the full stack (`ui`, `api`, `worker`,
-`reconciler`, `recurrence`, `token-refresher`, `metrics-poller`, `db`,
-`redis`) behind TLS, using the same `docker-compose.yml` as local dev. No
-Kubernetes, no managed database required — this fits a $6-12/mo VPS
-(Hetzner, DigitalOcean, Linode) comfortably for a solo/small-team workspace.
+One VPS, Docker Compose, Caddy for TLS. Fits a 2 GB VPS (Hetzner,
+DigitalOcean, Linode) for a solo creator or small team. 1 GB works if you
+turn off the API docs and keep media small, but 2 GB leaves room for video
+transcoding.
+
+The stack: `ui`, `api`, `worker` (publishing), `worker-media` (media,
+metrics, AI), `scheduler` (reconcile, recurrence, token refresh, metrics
+polling), a one-shot `migrate`, plus `db` (Postgres) and `redis`.
 
 ## 1. Provision
 
-Any VPS with Docker + Compose v2 and a public IPv4. A domain (or subdomain)
-pointed at it via an `A` record.
+Any VPS with a public IPv4 and two DNS `A` records pointing at it:
+
+- `app.example.com` for the UI
+- `api.example.com` for the API
 
 ```bash
 curl -fsSL https://get.docker.com | sh
@@ -21,67 +26,71 @@ curl -fsSL https://get.docker.com | sh
 mkdir omnipost && cd omnipost
 curl -fsSL -o docker-compose.yml https://raw.githubusercontent.com/suryaanshrai/omnipost/main/docker-compose.yml
 curl -fsSL -o .env.example https://raw.githubusercontent.com/suryaanshrai/omnipost/main/.env.example
+curl -fsSL -o backup.sh https://raw.githubusercontent.com/suryaanshrai/omnipost/main/backup.sh && chmod +x backup.sh
 cp .env.example .env
 ```
 
 Edit `.env`:
-- `DJANGO_SECRET_KEY` — `openssl rand -base64 48`
-- `OMNIPOST_KEK` — `openssl rand -base64 32` (wraps every stored credential —
-  losing this makes every connected channel unrecoverable, back it up)
-- `DB_PASSWORD`, `REDIS_PASSWORD` — random strings
-- `DJANGO_ALLOWED_HOSTS` — your domain, e.g. `app.example.com`
-- `DJANGO_CORS_ALLOWED_ORIGINS` / `PUBLIC_BASE_URL` / `VITE_API_URL` — your
-  domain with scheme, e.g. `https://app.example.com`
-- `SENTRY_DSN`, `METRICS_AUTH_TOKEN` — optional, see README.md#observability
 
-## 3. Put TLS in front of it
+| Variable | Value |
+|---|---|
+| `DJANGO_SECRET_KEY` | `openssl rand -base64 48` |
+| `OMNIPOST_KEK` | `openssl rand -base64 32`. Encrypts every connected account. **Back it up**: lose it and every channel must be reconnected. |
+| `DB_PASSWORD`, `REDIS_PASSWORD` | random strings (`openssl rand -hex 24`) |
+| `DJANGO_ALLOWED_HOSTS` | `api.example.com` |
+| `DJANGO_CORS_ALLOWED_ORIGINS`, `DJANGO_CSRF_TRUSTED_ORIGINS`, `FRONTEND_URL` | `https://app.example.com` |
+| `PUBLIC_BASE_URL`, `VITE_API_URL` | `https://api.example.com` |
+| `EMAIL_HOST` etc. | your SMTP provider, so password reset and verification emails are delivered |
+| `METRICS_AUTH_TOKEN` | optional; `/metrics` is off until it's set |
 
-`docker-compose.yml` doesn't publish 443 itself — put a reverse proxy in
-front. Caddy is the least ceremony (automatic Let's Encrypt, no separate
-certbot/renewal process to manage):
+## 3. Start the stack
 
 ```bash
-sudo apt-get install -y caddy   # or: docker run instead, if you'd rather not install on the host
+docker compose up -d --wait
+```
+
+`--wait` returns once every service is healthy. A non-zero exit means
+something is wrong: `docker compose ps` and `docker compose logs <service>`.
+
+Ports 8000 (API) and 5173 (UI) are bound to `127.0.0.1`, so they're only
+reachable through the proxy below. Docker's published ports bypass `ufw`,
+which is why they aren't bound to `0.0.0.0`.
+
+## 4. Put TLS in front of it
+
+```bash
+sudo apt-get install -y caddy
 ```
 
 `/etc/caddy/Caddyfile`:
 
 ```
 app.example.com {
+    reverse_proxy localhost:5173
+}
+
+api.example.com {
     reverse_proxy localhost:8000
 }
 ```
-
-The `ui` container serves the SPA and proxies `/api/` calls to `api` per its
-own nginx config — point Caddy at whichever port your `ui`/`api` split
-expects (check `omnipost-ui/docker/`); if you're serving API and UI on
-separate subdomains instead, add a second Caddyfile block pointed at the
-`ui` container's port.
 
 ```bash
 sudo systemctl reload caddy
 ```
 
-## 4. Start the stack
-
-```bash
-docker compose up -d --wait
-```
-
-`--wait` blocks until every service reports healthy (`api`'s healthcheck
-only passes once `migrate` has completed — see docker-compose.yml) — a
-non-zero exit here means something's actually wrong, not just slow.
+Caddy gets and renews Let's Encrypt certificates on its own and sets
+`X-Forwarded-Proto`, which the API needs to know requests arrived over HTTPS.
 
 ## 5. Verify
 
 ```bash
-curl -sf https://app.example.com/api/healthz
-curl -sf https://app.example.com/api/readyz
+curl -sf https://api.example.com/healthz
+curl -sf https://api.example.com/readyz
 ```
 
-Both should return `{"status": "ok", ...}`. Create your first user via
-`docker compose exec api python manage.py createsuperuser`, or through the
-UI's signup flow.
+Both return `{"status": "ok", ...}`. Then open `https://app.example.com`
+and create your account. For an admin login:
+`docker compose exec api python manage.py createsuperuser`.
 
 ## Updating
 
@@ -90,28 +99,57 @@ docker compose pull
 docker compose up -d --wait
 ```
 
-Pulls `:latest` (or whatever `IMAGE_TAG` is pinned to in `.env`) and
-recreates any container whose image changed. Migrations run automatically
-as part of the `api` container's entrypoint before it starts serving.
+`migrate` runs once before the API and workers start. Expect a few seconds
+of downtime while containers are recreated.
 
 ## Rolling back
 
-Every image is also tagged with the git SHA it was built from. Set
-`IMAGE_TAG=<sha>` in `.env` to the last known-good build, then:
+Every image is tagged with the git SHA it was built from. Set `IMAGE_TAG`
+(API) and `UI_IMAGE_TAG` (UI) in `.env` to the last good SHAs, then:
 
 ```bash
 docker compose up -d --wait
 ```
 
+A rollback across a database migration needs that migration reversed
+first; check the release notes before rolling back past one.
+
 ## Backups
 
-The only state that isn't reproducible from a redeploy is `db-data` (Postgres)
-and, if you're not using S3-compatible storage, `media-data`:
+State that a redeploy can't recreate: Postgres (`db-data`), uploaded media
+(`media-data`, unless you use S3) and `OMNIPOST_KEK` in `.env`.
+
+`backup.sh` writes a compressed database dump and a media archive to
+`./backups`, and keeps the last 14 days:
 
 ```bash
-docker compose exec db pg_dump -U root omni-db | gzip > "backup-$(date +%F).sql.gz"
+./backup.sh
 ```
 
-Run that on a cron; store the output somewhere off the VPS. If
-`AWS_STORAGE_BUCKET_NAME` is set, media already lives in S3/R2/B2 and needs
-no separate backup here.
+Run it nightly and copy `./backups` off the VPS (rclone, restic, or your
+provider's snapshots):
+
+```bash
+crontab -e
+# 17 3 * * * cd /root/omnipost && ./backup.sh >> backups/backup.log 2>&1
+```
+
+Restore:
+
+```bash
+docker compose stop api worker worker-media scheduler
+gunzip -c backups/db-YYYY-MM-DD.sql.gz | docker compose exec -T db psql -U root -d omni-db
+docker compose run --rm -v "$PWD/backups:/backups" --entrypoint sh api \
+  -c 'tar -xzf /backups/media-YYYY-MM-DD.tar.gz -C /app/mediafiles'
+docker compose up -d --wait
+```
+
+Test a restore on a spare VPS at least once; an untested backup is a guess.
+
+## Media
+
+Without an S3 bucket, the API serves uploads from `/media/` on
+`PUBLIC_BASE_URL`, which is where Instagram, TikTok and the others fetch
+them from. That needs `PUBLIC_BASE_URL` to be the public HTTPS address of
+the API. With `AWS_STORAGE_BUCKET_NAME` set, media lives in S3/R2/B2 and
+needs no backup here.
