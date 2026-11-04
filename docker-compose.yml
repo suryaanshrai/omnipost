@@ -1,17 +1,31 @@
-# Override with e.g. IMAGE_TAG=<git-sha> in .env to pin to (or roll back to)
-# a specific build instead of whatever :latest currently points at — every
-# image is also pushed tagged with its commit SHA (see omnipost-api's CI).
+# OmniPost: UI, API, workers, scheduler, Postgres, Redis.
+#
+# Pin a build with IMAGE_TAG=<git-sha> (API images) and UI_IMAGE_TAG=<git-sha>
+# in .env to roll back; every image is also pushed tagged with its commit SHA.
+
 x-api-image: &api-image suryaanshrai515/omnipost-api:${IMAGE_TAG:-latest}
+
+# Docker's default json-file logging never rotates; on a small VPS the disk
+# fills up. 3 x 10 MB per container.
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
 
 x-api-env: &api-env
   DJANGO_DEBUG: "false"
   DJANGO_SECRET_KEY: ${DJANGO_SECRET_KEY:?set DJANGO_SECRET_KEY in .env}
   DJANGO_ALLOWED_HOSTS: ${DJANGO_ALLOWED_HOSTS:-localhost,127.0.0.1}
   DJANGO_CORS_ALLOWED_ORIGINS: ${DJANGO_CORS_ALLOWED_ORIGINS:-http://localhost:5173}
+  DJANGO_CSRF_TRUSTED_ORIGINS: ${DJANGO_CSRF_TRUSTED_ORIGINS:-}
+  # Behind a TLS proxy (see DEPLOY.md) leave this on. Set "false" only for a
+  # plain-HTTP local run, or every request is redirected to https://.
+  DJANGO_SECURE_SSL_REDIRECT: ${DJANGO_SECURE_SSL_REDIRECT:-true}
   # Wraps every encrypted channel credential and BYOK provider key — see
   # omnipost_api/crypto.py. Generate with: openssl rand -base64 32
-  OMNIPOST_KEK: ${OMNIPOST_KEK:?set OMNIPOST_KEK in .env — see infra notes in README.md}
-  PYTHONPATH: /app/app
+  OMNIPOST_KEK: ${OMNIPOST_KEK:?set OMNIPOST_KEK in .env (openssl rand -base64 32)}
+  PYTHONPATH: /app
   DB_NAME: omni-db
   DB_USER: root
   DB_PASSWORD: ${DB_PASSWORD:?set DB_PASSWORD in .env}
@@ -19,6 +33,15 @@ x-api-env: &api-env
   DB_PORT: "5432"
   REDIS_HOST: redis
   REDIS_PASSWORD: ${REDIS_PASSWORD:?set REDIS_PASSWORD in .env}
+  # Where links in emails (password reset, verification) point.
+  FRONTEND_URL: ${FRONTEND_URL:-http://localhost:5173}
+  EMAIL_HOST: ${EMAIL_HOST:-}
+  EMAIL_PORT: ${EMAIL_PORT:-587}
+  EMAIL_HOST_USER: ${EMAIL_HOST_USER:-}
+  EMAIL_HOST_PASSWORD: ${EMAIL_HOST_PASSWORD:-}
+  DEFAULT_FROM_EMAIL: ${DEFAULT_FROM_EMAIL:-}
+  ACCOUNT_EMAIL_VERIFICATION: ${ACCOUNT_EMAIL_VERIFICATION:-optional}
+  AUTH_TOKEN_TTL_DAYS: ${AUTH_TOKEN_TTL_DAYS:-30}
   AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
   AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
   AWS_STORAGE_BUCKET_NAME: ${AWS_STORAGE_BUCKET_NAME:-}
@@ -28,9 +51,8 @@ x-api-env: &api-env
   PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-http://localhost:8000}
   ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
   OPENAI_API_KEY: ${OPENAI_API_KEY:-}
-  # Gated platforms (Phase 6) — managed apps only; LinkedIn/X run under each
-  # workspace's own AppCredential instead. See omnipost-api's .env.example
-  # for why each is blank until that platform's approval clears.
+  # Platform apps run by this deployment (LinkedIn and X use each
+  # workspace's own app instead). Blank = that platform can't be connected.
   META_APP_ID: ${META_APP_ID:-}
   META_APP_SECRET: ${META_APP_SECRET:-}
   THREADS_APP_ID: ${THREADS_APP_ID:-}
@@ -39,142 +61,110 @@ x-api-env: &api-env
   TIKTOK_CLIENT_SECRET: ${TIKTOK_CLIENT_SECRET:-}
   YOUTUBE_CLIENT_ID: ${YOUTUBE_CLIENT_ID:-}
   YOUTUBE_CLIENT_SECRET: ${YOUTUBE_CLIENT_SECRET:-}
-  # Observability (Phase 7) — both optional. Blank SENTRY_DSN disables error
-  # reporting entirely; blank METRICS_AUTH_TOKEN leaves GET /metrics open
-  # (no secrets/PII in it, same default as /healthz — see omnipost-api's
-  # settings.py). SENTRY_ENVIRONMENT defaults to "production" server-side.
   SENTRY_DSN: ${SENTRY_DSN:-}
   SENTRY_ENVIRONMENT: ${SENTRY_ENVIRONMENT:-}
+  # GET /metrics is off in production until this is set.
   METRICS_AUTH_TOKEN: ${METRICS_AUTH_TOKEN:-}
+  ENABLE_ADMIN: ${ENABLE_ADMIN:-true}
+  ENABLE_API_DOCS: ${ENABLE_API_DOCS:-true}
+  MIGRATE_ON_START: "false"
 
-x-api-depends-on-stores: &api-depends-on-stores
-  db:
-    condition: service_healthy
-  redis:
-    condition: service_healthy
+x-api-service: &api-service
+  image: *api-image
+  environment: &api-service-env
+    <<: *api-env
+  networks: [omni-net]
+  restart: unless-stopped
+  logging: *logging
+  volumes:
+    - media-data:/app/mediafiles
+  depends_on:
+    db:
+      condition: service_healthy
+    redis:
+      condition: service_healthy
+    migrate:
+      condition: service_completed_successfully
 
 services:
-  ui:
-    container_name: omni-ui
-    image: suryaanshrai515/omnipost-ui:latest
-    ports:
-      - "5173:5173"
-    environment:
-      - VITE_API_URL=${VITE_API_URL:-http://localhost:8000}
-    depends_on:
-      api:
-        condition: service_healthy
-    networks:
-      - omni-net
-
-  api:
-    container_name: omni-api
+  # Runs migrations once, then exits. Everything API-side waits for it.
+  migrate:
     image: *api-image
-    ports:
-      - "8000:8000"
-    networks:
-      - omni-net
     environment:
       <<: *api-env
+      OMNIPOST_ROLE: migrate
+    networks: [omni-net]
+    logging: *logging
+    restart: "no"
+    depends_on:
+      db:
+        condition: service_healthy
+
+  api:
+    <<: *api-service
+    environment:
+      <<: *api-service-env
       OMNIPOST_ROLE: web
-    volumes:
-      - media-data:/app/mediafiles
-    depends_on: *api-depends-on-stores
+    # Bound to localhost: the TLS proxy (DEPLOY.md) is the only way in.
+    # Docker's published ports bypass ufw, so 0.0.0.0 would expose plain HTTP.
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:8000:8000"
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/healthz').status==200 else 1)"]
+      test: ["CMD", "curl", "-fsS", "http://localhost:8000/healthz"]
       interval: 10s
       timeout: 5s
       retries: 5
-      start_period: 15s
+      start_period: 20s
 
+  # Publishing (time-sensitive) and media/metrics/AI run in separate workers
+  # so a video transcode never delays a scheduled post.
   worker:
-    container_name: omni-worker
-    image: *api-image
-    networks:
-      - omni-net
+    <<: *api-service
     environment:
-      <<: *api-env
-      OMNIPOST_ROLE: worker
-    volumes:
-      - media-data:/app/mediafiles
-    depends_on:
-      api:
-        # Waits for api's healthcheck, which only passes after its entrypoint
-        # has run `migrate` — keeps the worker from touching tables that
-        # don't exist yet on a first boot.
-        condition: service_healthy
-      <<: *api-depends-on-stores
-    restart: unless-stopped
+      <<: *api-service-env
+      OMNIPOST_ROLE: worker-publish
 
-  reconciler:
-    container_name: omni-reconciler
-    image: *api-image
-    networks:
-      - omni-net
+  worker-media:
+    <<: *api-service
     environment:
-      <<: *api-env
-      OMNIPOST_ROLE: reconciler
-    depends_on:
-      api:
-        condition: service_healthy
-      <<: *api-depends-on-stores
-    restart: unless-stopped
+      <<: *api-service-env
+      OMNIPOST_ROLE: worker-media
 
-  recurrence:
-    container_name: omni-recurrence
-    image: *api-image
-    networks:
-      - omni-net
+  # Reconciler, recurrence, token refresh and metrics polling, in one process.
+  scheduler:
+    <<: *api-service
     environment:
-      <<: *api-env
-      OMNIPOST_ROLE: recurrence
-    depends_on:
-      api:
-        condition: service_healthy
-      <<: *api-depends-on-stores
-    restart: unless-stopped
+      <<: *api-service-env
+      OMNIPOST_ROLE: scheduler
+    volumes: []
 
-  token-refresher:
-    container_name: omni-token-refresher
-    image: *api-image
-    networks:
-      - omni-net
+  ui:
+    image: suryaanshrai515/omnipost-ui:${UI_IMAGE_TAG:-latest}
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:5173:5173"
     environment:
-      <<: *api-env
-      OMNIPOST_ROLE: token-refresher
-    depends_on:
-      api:
-        condition: service_healthy
-      <<: *api-depends-on-stores
+      - VITE_API_URL=${VITE_API_URL:-http://localhost:8000}
+    networks: [omni-net]
     restart: unless-stopped
-
-  metrics-poller:
-    container_name: omni-metrics-poller
-    image: *api-image
-    networks:
-      - omni-net
-    environment:
-      <<: *api-env
-      OMNIPOST_ROLE: metrics-poller
-    depends_on:
-      api:
-        condition: service_healthy
-      <<: *api-depends-on-stores
-    restart: unless-stopped
+    logging: *logging
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:5173/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
   db:
-    container_name: omni-db
     image: postgres:16
     volumes:
       - db-data:/var/lib/postgresql/data
-    # Not published to the host. Connect via `docker compose exec db psql ...`
-    # if you need a shell; the old setup published 5432 with root/root creds.
+    # Not published to the host. Shell: `docker compose exec db psql -U root omni-db`.
     environment:
       POSTGRES_USER: root
       POSTGRES_PASSWORD: ${DB_PASSWORD:?set DB_PASSWORD in .env}
       POSTGRES_DB: omni-db
-    networks:
-      - omni-net
+    networks: [omni-net]
+    restart: unless-stopped
+    logging: *logging
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U root -d omni-db"]
       interval: 5s
@@ -183,13 +173,28 @@ services:
 
   redis:
     image: redis:7-alpine
-    container_name: omni-redis
-    command: ["redis-server", "--requirepass", "${REDIS_PASSWORD:?set REDIS_PASSWORD in .env}"]
-    # Not published to the host — the old setup exposed 6379 with no auth.
-    networks:
-      - omni-net
+    # appendonly: scheduled jobs survive a Redis restart (Postgres is still
+    # the source of truth; the reconciler re-queues anything lost).
+    # noeviction: Redis must never silently drop queued jobs under memory
+    # pressure.
+    command:
+      - redis-server
+      - --requirepass
+      - ${REDIS_PASSWORD:?set REDIS_PASSWORD in .env}
+      - --appendonly
+      - "yes"
+      - --maxmemory-policy
+      - noeviction
+    environment:
+      # redis-cli reads the password from here, so it's not on the command line.
+      REDISCLI_AUTH: ${REDIS_PASSWORD}
+    volumes:
+      - redis-data:/data
+    networks: [omni-net]
+    restart: unless-stopped
+    logging: *logging
     healthcheck:
-      test: ["CMD-SHELL", "redis-cli -a $$REDIS_PASSWORD ping | grep -q PONG"]
+      test: ["CMD-SHELL", "redis-cli ping | grep -q PONG"]
       interval: 5s
       timeout: 5s
       retries: 10
@@ -201,3 +206,4 @@ networks:
 volumes:
   db-data:
   media-data:
+  redis-data:
