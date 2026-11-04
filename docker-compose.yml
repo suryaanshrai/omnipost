@@ -61,6 +61,13 @@ x-api-env: &api-env
   TIKTOK_CLIENT_SECRET: ${TIKTOK_CLIENT_SECRET:-}
   YOUTUBE_CLIENT_ID: ${YOUTUBE_CLIENT_ID:-}
   YOUTUBE_CLIENT_SECRET: ${YOUTUBE_CLIENT_SECRET:-}
+  # Extra OAuth scopes to request, for analytics. Each needs the platform to
+  # grant it to your app; channels must reconnect to pick it up.
+  X_EXTRA_SCOPES: ${X_EXTRA_SCOPES:-}
+  LINKEDIN_EXTRA_SCOPES: ${LINKEDIN_EXTRA_SCOPES:-}
+  META_EXTRA_SCOPES: ${META_EXTRA_SCOPES:-}
+  THREADS_EXTRA_SCOPES: ${THREADS_EXTRA_SCOPES:-}
+  YOUTUBE_EXTRA_SCOPES: ${YOUTUBE_EXTRA_SCOPES:-}
   SENTRY_DSN: ${SENTRY_DSN:-}
   SENTRY_ENVIRONMENT: ${SENTRY_ENVIRONMENT:-}
   # GET /metrics is off in production until this is set.
