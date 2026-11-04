@@ -72,6 +72,13 @@ Every image is pushed tagged `:latest` and `:<git-sha>`. To roll back, set
 `IMAGE_TAG=<sha>` (API) and `UI_IMAGE_TAG=<sha>` (UI) in `.env` to the last
 known-good builds and re-run `docker compose up -d --wait`.
 
+## Development
+
+`make dev` clones the API and UI next to this repo and runs everything
+with hot reload (see `compose.dev.yml`). `make help` lists the other
+shortcuts. How the pieces fit: [ARCHITECTURE.md](ARCHITECTURE.md).
+Contributing: [CONTRIBUTING.md](CONTRIBUTING.md).
+
 ## Cloud deploy
 
 See [DEPLOY.md](DEPLOY.md) for a recipe deploying this stack to a single
