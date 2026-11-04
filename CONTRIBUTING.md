@@ -32,5 +32,8 @@ repo's README for its layout.
 
 ## Licensing
 
-OmniPost is GPL-3.0. By contributing you agree your contribution is
-licensed under the same terms.
+OmniPost is AGPL-3.0-or-later (see LICENSE and NOTICE in each repo).
+Contributions come with the [contributor agreement](CLA.md): you keep your
+copyright, the project can also use your code in the hosted service, and
+the open-source version always stays AGPL. Add the line from CLA.md to
+your first pull request.
