@@ -160,6 +160,8 @@ services:
       - "${BIND_ADDRESS:-127.0.0.1}:5173:5173"
     environment:
       - VITE_API_URL=${VITE_API_URL:-http://localhost:8000}
+      # The app's "Source code" link (AGPL §13). Your fork, if you changed the code.
+      - SOURCE_URL=${SOURCE_URL:-https://github.com/suryaanshrai/omnipost}
     networks: [omni-net]
     restart: unless-stopped
     logging: *logging

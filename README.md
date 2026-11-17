@@ -1,6 +1,10 @@
 # omnipost
 
-Orchestration for the OmniPost stack (API, worker, UI, Postgres, Redis).
+Write a post once, publish it to eleven networks, and see exactly what
+landed. This repo runs the OmniPost stack (API, worker, UI, Postgres,
+Redis) and holds its docs.
+
+![Connecting an account, writing a thread and saving it as a draft](docs/img/demo.gif)
 
 ## Quick start
 
@@ -87,3 +91,16 @@ cloud VPS with TLS.
 Source:
 - API: https://github.com/suryaanshrai/omnipost-api
 - UI: https://github.com/suryaanshrai/omnipost-ui
+
+## More
+
+- [ROADMAP.md](ROADMAP.md): what's coming
+- [APP_REVIEW.md](APP_REVIEW.md): getting your own Meta, TikTok, YouTube,
+  X and LinkedIn apps approved
+- The docs site (`make docs` to preview) collects these pages
+
+## License
+
+AGPL-3.0-or-later. See [LICENSE](LICENSE) and [NOTICE](NOTICE). If you run
+a modified OmniPost for other people, set `SOURCE_URL` (in `.env`) to where
+its source is: the app links to it, as the AGPL asks.

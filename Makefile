@@ -1,7 +1,7 @@
 # Shortcuts. `make help` lists them.
 DEV := docker compose -f compose.dev.yml
 
-.PHONY: help clone dev down logs test api-shell e2e up backup
+.PHONY: help clone dev down logs test api-shell e2e up backup docs docs-build
 
 help:            ## List targets
 	@grep -E '^[a-z-]+:.*##' $(MAKEFILE_LIST) | sed 's/:.*## /\t/'
@@ -35,3 +35,13 @@ up:              ## Production stack (needs .env; see README)
 
 backup:          ## Back up the production stack (see DEPLOY.md)
 	./backup.sh
+
+DOC_PAGES := DEPLOY.md APP_REVIEW.md ARCHITECTURE.md CONTRIBUTING.md CLA.md ROADMAP.md
+
+docs-build:      ## Build the docs site into site/ (needs: pip install mkdocs)
+	cp $(DOC_PAGES) docs/
+	mkdocs build --strict
+
+docs:            ## Preview the docs site at http://127.0.0.1:8001
+	cp $(DOC_PAGES) docs/
+	mkdocs serve -a 127.0.0.1:8001

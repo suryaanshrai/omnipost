@@ -1,0 +1,20 @@
+site_name: OmniPost
+site_description: Write once, post everywhere, see exactly what landed.
+repo_url: https://github.com/suryaanshrai/omnipost
+edit_uri: ""
+docs_dir: docs
+theme:
+  name: mkdocs
+nav:
+  - Home: index.md
+  - Deploy: DEPLOY.md
+  - Platform apps: APP_REVIEW.md
+  - Architecture: ARCHITECTURE.md
+  - API and automation: api.md
+  - Contributing: CONTRIBUTING.md
+  - CLA: CLA.md
+  - Roadmap: ROADMAP.md
+markdown_extensions:
+  - tables
+  - toc:
+      permalink: true
