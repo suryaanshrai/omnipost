@@ -1,0 +1,87 @@
+# Local development: builds the API from a sibling checkout with your code
+# mounted in, runs Vite with hot reload, and exposes Postgres/Redis on
+# localhost for tools. Not for production (DEBUG on, throwaway secrets).
+#
+#   omnipost/        <- this repo
+#   omnipost-api/    <- git clone https://github.com/suryaanshrai/omnipost-api
+#   omnipost-ui/     <- git clone https://github.com/suryaanshrai/omnipost-ui
+#
+#   make dev          (or: docker compose -f compose.dev.yml up --build)
+
+x-api-dev: &api-dev
+  build: ../omnipost-api
+  volumes:
+    - ../omnipost-api/app:/app
+    - media-dev:/app/mediafiles
+  environment: &api-dev-env
+    DJANGO_DEBUG: "true"
+    DJANGO_SECRET_KEY: dev-only-secret
+    OMNIPOST_KEK: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
+    DB_HOST: db
+    DB_NAME: omni-db
+    DB_USER: root
+    DB_PASSWORD: root
+    REDIS_HOST: redis
+    REDIS_PASSWORD: ""
+    FRONTEND_URL: http://localhost:5173
+    PUBLIC_BASE_URL: http://localhost:8000
+  depends_on:
+    db:
+      condition: service_healthy
+    redis:
+      condition: service_healthy
+
+services:
+  api:
+    <<: *api-dev
+    entrypoint: ["sh", "-c", "python manage.py migrate --noinput && python manage.py runserver 0.0.0.0:8000"]
+    ports: ["8000:8000"]
+
+  worker:
+    <<: *api-dev
+    environment:
+      <<: *api-dev-env
+      OMNIPOST_ROLE: worker
+
+  scheduler:
+    <<: *api-dev
+    environment:
+      <<: *api-dev-env
+      OMNIPOST_ROLE: scheduler
+
+  ui:
+    image: node:22-slim
+    working_dir: /src
+    command: ["sh", "-c", "npm ci --no-audit --no-fund && npx vite --host 0.0.0.0 --port 5173"]
+    volumes:
+      - ../omnipost-ui:/src
+      - ui-node-modules:/src/node_modules
+    environment:
+      VITE_API_URL: http://localhost:8000
+    ports: ["5173:5173"]
+
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: root
+      POSTGRES_PASSWORD: root
+      POSTGRES_DB: omni-db
+    ports: ["127.0.0.1:5432:5432"]
+    volumes: [db-dev:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U root -d omni-db"]
+      interval: 3s
+      retries: 20
+
+  redis:
+    image: redis:7-alpine
+    ports: ["127.0.0.1:6379:6379"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 3s
+      retries: 20
+
+volumes:
+  db-dev:
+  media-dev:
+  ui-node-modules:
