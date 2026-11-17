@@ -164,7 +164,9 @@ services:
     restart: unless-stopped
     logging: *logging
     healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost:5173/healthz"]
+      # 127.0.0.1, not localhost: in the container localhost resolves to ::1
+      # first, nginx listens on IPv4 only, and busybox wget doesn't fall back.
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:5173/healthz"]
       interval: 10s
       timeout: 5s
       retries: 5
